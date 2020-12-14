@@ -5,7 +5,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define DEGREE 1024 * 1024
+#define DEGREE 1024
 // remember to close file and output all nodes to disk and rename root
 
 typedef struct treenode
@@ -24,6 +24,8 @@ typedef struct treenode
 	int access;
 	int leaf;
 }TN;
+int counter = 1;
+TN* ROOT = NULL;
 
 
 typedef struct st{
@@ -32,7 +34,7 @@ typedef struct st{
 	struct st* next;
 }stack;
 
-TN* creatNode(int t, int leaf, TN* root ,TN* parent);
+TN* creatNode(int t, int leaf, TN* parent);
 
 
 
@@ -62,7 +64,6 @@ void push(TN* nd)
 int NODESIZE = sizeof(TN) + (sizeof(unsigned long long int) + sizeof(char*) + sizeof(char) * 129) * (2 * DEGREE - 1) + (sizeof(TN*) + sizeof(int)) * 2 * DEGREE;
 int TREESIZE = 0;//((1024 * 1024 * 1024 / NODESIZE * 3) % 1000 ) * 1000; 
 
-int counter = 0;
 
 void deleteNode(TN* node)
 {
@@ -73,21 +74,44 @@ void deleteNode(TN* node)
 		{
 			//maintain relation on disk;
 			parent -> childNum[i] = node -> filenum;
-			parent -> c[i] = NULL;//delete from Mem
+			//delete from Mem
+			parent -> c[i] = NULL;
 			break;
 		}
 	}
 	free(node -> key);
+	node -> key = NULL;
 	for(int i = 0; i < 2 * DEGREE - 1; i++)
+	{
 		free(node -> value[i]);
+		node -> value[i] = NULL;
+	}
 	free(node -> value);
+	node -> value = NULL;
 	free(node -> c);
+	node -> c = NULL;
 	free(node -> childNum);
+	node -> childNum = NULL;
 	free(node);
 }
 
-void writeToDisk(TN* nd)
+void writeToDisk(TN** node)
 {
+	int a = (*node) -> filenum;
+	printf("\nwrite filenum: %d\n", (*node)->filenum);
+	TN* nd = *node;
+	/*
+	for(int i = 0; i < nd -> n + 1; i++)
+	{
+		if(nd -> c[i])
+		{
+			printf("%d ", nd -> c[i] -> filenum);
+			writeToDisk(&(nd -> c[i]));
+		}
+
+	}
+	*/
+	//string processing for opening data
 	struct stat st = {0};
 	if(stat("./storage", &st) == -1)
 		mkdir("./storage", 0700);
@@ -96,7 +120,7 @@ void writeToDisk(TN* nd)
 	sprintf(buffer, "%d", nd -> filenum);
 	strcat(filename, buffer);
 	FILE* fp = fopen(filename, "w");
-	// write the TN node to file
+	// write the node to file
 	fprintf(fp, "%d %d %d %d %d ", nd -> n, nd -> size, nd -> access, nd -> leaf, nd -> filenum);
 	for(int i = 0; i < nd -> n; i++)
 		fprintf(fp, "%llu %s\n", nd -> key[i], nd -> value[i]);
@@ -105,6 +129,8 @@ void writeToDisk(TN* nd)
 			fprintf(fp, "./storage/%d\n", nd -> childNum[i]);
 	fclose(fp);
 	deleteNode(nd);
+	*node = NULL;
+	printf("filenum: %d finished\n",a);
 }
 
 TN* openFileFromDisk(int filenum)
@@ -114,7 +140,7 @@ TN* openFileFromDisk(int filenum)
 	sprintf(buffer, "%d", filenum);
 	strcat(filename, buffer);
 	FILE* fp = fopen(filename, "r");
-	TN* nd = creatNode(DEGREE, 0, NULL, NULL);
+	TN* nd = creatNode(DEGREE, 0, NULL);
 	fscanf(fp, "%d%d%d%d%d", &(nd -> n), &(nd -> size), &(nd -> access), &(nd -> leaf), &(nd -> filenum));
 	for(int i = 0; i < nd -> n; i++)
 		fscanf(fp, "%llu %s", &(nd -> key[i]), nd -> value[i]);
@@ -122,6 +148,7 @@ TN* openFileFromDisk(int filenum)
 		for(int i = 0; i < nd -> n + 1; i++)
 			fscanf(fp, "./storage/%d\n", &(nd -> childNum[i]));
 	fclose(fp);
+	printf("filenum %d opened\n", filenum);
 	return nd;
 
 }
@@ -141,17 +168,20 @@ int writeStackToDisk()
 	if(tmp)
 	{
 		tmp -> onMem = 0;
-		writeToDisk(tmp -> node);
+		push(tmp->node->parent);
+		writeToDisk(&(tmp -> node));
 		return 1; // OK!
 	}
 	else
 	{
+		printf("you die!!\n");
+		exit(0);
 		for(stack* t = st; t; t = t-> next)
 		{
 			if(t -> onMem)
 			{
 				t -> onMem = 0;
-				writeToDisk(t -> node);
+				writeToDisk(&(t -> node));
 				return 1;
 			}
 			else
@@ -163,32 +193,8 @@ int writeStackToDisk()
 	}
 }
 
-void addToStack(TN* root)
+TN* creatNode(int t, int leaf, TN* parent)
 {
-	//add non-leaf node to stack and wait for being deleted
-	if(!root)
-		return;
-	if(!root -> c[0])
-	{
-		push(root);
-		return;
-	}
-	else
-	{
-		for(int i = 0; i < root -> n + 1; i++)
-			addToStack(root -> c[i]);
-	}
-	
-}
-
-TN* creatNode(int t, int leaf, TN* root, TN* parent)
-{
-	if(counter >= TREESIZE)
-		if(!writeStackToDisk())
-		{
-			addToStack(root);
-			writeStackToDisk();
-		}
 	TN* nd = malloc(sizeof(TN));
 	nd -> key = malloc(sizeof(unsigned long long int) * (2 * t - 1));
 	nd -> value = malloc(sizeof(char*) * (2 * t - 1));
@@ -203,6 +209,7 @@ TN* creatNode(int t, int leaf, TN* root, TN* parent)
 	nd -> size = 0;
 	nd -> access = 0;
 	nd -> filenum = counter++;
+	printf("create %d\n", nd -> filenum);
 	if(nd -> leaf)
 		push(nd);
 	return nd;
@@ -261,6 +268,8 @@ void traverse_loop(TN* root)
 // test if the child is NULL? if it is NULL go find the disk!!
 char* search(TN* root, unsigned long long int key)
 {
+	if(!root)
+		return NULL;
 	int i = 0;
 	root -> access++;
 	while(root -> key[i] < key && i < root -> n)
@@ -269,7 +278,7 @@ char* search(TN* root, unsigned long long int key)
 		return root -> value[i];
 	if(root -> leaf)
 		return NULL;
-	if(!root -> c[i]  && ! root -> leaf)
+	if(!root -> c[i])
 	{
 		root -> c[i] = openFileFromDisk(root -> childNum[i]);
 		root -> c[i] -> parent = root;
@@ -281,9 +290,10 @@ char* search(TN* root, unsigned long long int key)
 void splitChild(TN* root, int i, TN* y)
 {
 	int tmp = y -> access;
-	TN* z = creatNode(DEGREE, y -> leaf, y, root);
+	TN* z = creatNode(DEGREE, y -> leaf, root);
 	z -> n = DEGREE - 1;
 	y -> n = DEGREE - 1;
+
 	for(int j = 0; j < DEGREE - 1; j++)
 	{
 		z -> key[j] = y -> key[j + DEGREE];
@@ -303,6 +313,7 @@ void splitChild(TN* root, int i, TN* y)
 				y -> c[j + DEGREE] -> parent = y;
 			}
 			z -> c[j] = y -> c[j + DEGREE];
+			z -> childNum[j] = y -> c[j + DEGREE] -> filenum;
 		}
 		// calculate size of sub tree
 		for(int j = 0; j < DEGREE; j++)
@@ -322,8 +333,17 @@ void splitChild(TN* root, int i, TN* y)
 	y -> access += tmp;
 	z -> access += tmp;	
 	for(int j = root -> n; j >= i+1; j--)
+	{
+		if(!root -> c[j])
+		{
+			root -> c[j] = openFileFromDisk(root -> childNum[j]);
+			root -> c[j] -> parent = root;
+		}
 		root -> c[j + 1] = root -> c[j];
+		root -> childNum[j + 1] = root -> c[j] -> filenum;
+	}
 	root -> c[i + 1] = z;
+	root -> childNum[i + 1] = z -> filenum;
 	for(int j = root -> n - 1; j >= i; j--)
 	{
 		root -> key[j + 1] = root ->key[j];
@@ -337,10 +357,11 @@ void splitChild(TN* root, int i, TN* y)
 // test if the child is NULL? if it is NULL go find the disk!!
 int insertNonFull(TN* root, unsigned long long int key, char* value)
 {
-	int i = root -> n - 1;
+	root -> access++;
 	if(root -> leaf)
 	{
-		while(i >= 0 && root -> key[i] > key)
+		int i = root -> n - 1;
+		while(i > 0 && root -> key[i] > key)
 			i--;
 		if(root -> key[i] == key) // find the key and update the value
 		{
@@ -361,13 +382,17 @@ int insertNonFull(TN* root, unsigned long long int key, char* value)
 	}
 	else
 	{
-		while(i >= 0 && root -> key[i] > key)
+		int i = root -> n - 1;
+		while(i > 0 && root -> key[i] > key)
 			i--;
 		if(root -> key[i] == key) // find the key and update the value
 		{
 			strcpy(root -> value[i], value);
 			return 0;
 		}
+		i = root -> n - 1;
+		while(i >= 0 && root -> key[i] > key)
+			i--;
 		if(! root -> c[i + 1] && ! root -> leaf)
 		{
 			root -> c[i + 1] = openFileFromDisk(root -> childNum[i + 1]);
@@ -379,14 +404,27 @@ int insertNonFull(TN* root, unsigned long long int key, char* value)
 			if(root -> key[i + 1] == key) // find the key and update the value
 			{
 				strcpy(root -> value[i + 1], value);
+				if(counter > TREESIZE)
+					writeStackToDisk();
 				return 0;
 			}
 			if(root -> key[i + 1] < key)
 				i++;
+			int tmp = insertNonFull(root -> c[i + 1], key, value);
+			root -> c[i + 1] -> size += tmp;
+			if(counter > TREESIZE)
+				writeStackToDisk();
+			return tmp;
 		}
+		/*
+		if(! root -> c[i + 1] && ! root -> leaf)
+		{
+			root -> c[i + 1] = openFileFromDisk(root -> childNum[i + 1]);
+			root -> c[i + 1] -> parent = root;
+		}
+		*/
 		int tmp = insertNonFull(root -> c[i + 1], key, value);
 		root -> c[i + 1] -> size += tmp;
-		root -> c[i + 1] -> access++;
 		return tmp;
 	}
 }
@@ -396,21 +434,23 @@ void insert(TN** root, unsigned long long int key, char* value)
 {
 	if(! *root)
 	{
-		*root = creatNode(DEGREE, 1, NULL, NULL);
+		*root = creatNode(DEGREE, 1, NULL);
 		(*root) -> key[0] = key;
 		strcpy((*root) -> value[0], value);
 		(*root) -> n  = 1;
 		(*root) -> size++;
 		(*root) -> access++;
+		ROOT = *root;
 	}
 	else
 	{
 		if((*root) -> n == 2 * (*root) -> t - 1)
 		{
-			TN* tmp = creatNode(DEGREE, 0, *root, NULL);
+			TN* tmp = creatNode(DEGREE, 0, NULL);
 			tmp -> size = (*root) -> size; 
 			tmp -> access = (*root) -> access;
 			tmp -> c[0] = *root;
+			tmp -> childNum[0] = (*root) -> filenum;
 			// change parent of old root to new onw
 			(*root) -> parent = tmp;
 			splitChild(tmp, 0, *root);
@@ -419,8 +459,10 @@ void insert(TN** root, unsigned long long int key, char* value)
 			//	i++;
 			//tmp -> size += insertNonFull(tmp -> c[i], key, value);
 			tmp -> size += insertNonFull(tmp, key, value);
-			tmp -> access++;
 			*root = tmp;
+			ROOT = *root;
+			if(counter > TREESIZE)
+				writeStackToDisk();
 		}
 		else
 			(*root) -> size += insertNonFull(*root, key, value);
@@ -461,7 +503,7 @@ FILE* stringProcessing(char* a)
 int main(int argc, char* argv[])
 {
 	printf("%d\n", NODESIZE);
-	TREESIZE = (1024 * 1024 * 1024 / NODESIZE * 3); 
+	TREESIZE = (1024 * 1024 / NODESIZE * 3); 
 	printf("%d\n", TREESIZE);
 	//return 1;
 	TN* rt = NULL;
