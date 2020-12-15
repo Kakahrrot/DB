@@ -5,8 +5,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define DEGREE 1024
-// remember to close file and output all nodes to disk and rename root
+#define DEGREE 1024 * 1024
+
 
 typedef struct treenode
 {
@@ -14,19 +14,20 @@ typedef struct treenode
 	char** value;
 	int t;
 	struct treenode** c;
-
-	//remember to mainain parent!!
 	struct treenode* parent;
 	int filenum;
-	int* childNum;// -1 means not onMem!!
+	int* childNum;
 	int n; //current number of keys
 	int size;//current number of key-value pair in the sub-tree
 	int access;
 	int leaf;
 }TN;
-int counter = 1;
-TN* ROOT = NULL;
 
+int counter = 0;
+int filenumber = 1;
+TN* ROOT = NULL;
+int NODESIZE = sizeof(TN) + (sizeof(unsigned long long int) + sizeof(char*) + sizeof(char) * 129) * (2 * DEGREE - 1) + (sizeof(TN*) + sizeof(int)) * 2 * DEGREE;
+int TREESIZE = 0;//((1024 * 1024 * 1024 / NODESIZE * 3) % 1000 ) * 1000; 
 
 typedef struct st{
 	TN* node;
@@ -35,8 +36,6 @@ typedef struct st{
 }stack;
 
 TN* creatNode(int t, int leaf, TN* parent);
-
-
 
 stack *st = NULL;
 stack *end = NULL;
@@ -61,24 +60,23 @@ void push(TN* nd)
 	}
 }
 
-int NODESIZE = sizeof(TN) + (sizeof(unsigned long long int) + sizeof(char*) + sizeof(char) * 129) * (2 * DEGREE - 1) + (sizeof(TN*) + sizeof(int)) * 2 * DEGREE;
-int TREESIZE = 0;//((1024 * 1024 * 1024 / NODESIZE * 3) % 1000 ) * 1000; 
-
-
 void deleteNode(TN* node)
 {
+	counter--;
 	TN* parent = node -> parent;
-	for(int i = 0; i < parent -> n + 1; i++)
-	{
-		if(parent -> c[i] == node)
+	if(parent)
+		for(int i = 0; i < parent -> n + 1; i++)
 		{
-			//maintain relation on disk;
-			parent -> childNum[i] = node -> filenum;
-			//delete from Mem
-			parent -> c[i] = NULL;
-			break;
+			if(parent -> c[i] == node)
+			{
+				if(parent->filenum == 209)
+				//maintain relation on disk;
+				parent -> childNum[i] = node -> filenum;
+				//delete from Mem
+				parent -> c[i] = NULL;
+				break;
+			}
 		}
-	}
 	free(node -> key);
 	node -> key = NULL;
 	for(int i = 0; i < 2 * DEGREE - 1; i++)
@@ -97,8 +95,7 @@ void deleteNode(TN* node)
 
 void writeToDisk(TN** node)
 {
-	int a = (*node) -> filenum;
-	printf("\nwrite filenum: %d\n", (*node)->filenum);
+	//printf("\nwrite filenum: %d\n", (*node)->filenum);
 	TN* nd = *node;
 	/*
 	for(int i = 0; i < nd -> n + 1; i++)
@@ -126,34 +123,39 @@ void writeToDisk(TN** node)
 		fprintf(fp, "%llu %s\n", nd -> key[i], nd -> value[i]);
 	if(!nd -> leaf)
 		for(int i = 0; i < nd -> n + 1; i++)
-			fprintf(fp, "./storage/%d\n", nd -> childNum[i]);
+			fprintf(fp, "%d\n", nd -> childNum[i]);
 	fclose(fp);
 	deleteNode(nd);
 	*node = NULL;
-	printf("filenum: %d finished\n",a);
 }
 
 TN* openFileFromDisk(int filenum)
 {
-	char buffer[50];
-	char filename[50] = "./storage/";
-	sprintf(buffer, "%d", filenum);
-	strcat(filename, buffer);
-	FILE* fp = fopen(filename, "r");
+	FILE* fp;
+	if(filenum == 0)
+		fp = fopen("./storage/root", "r");
+	else
+	{
+		char buffer[50];
+		char filename[50] = "./storage/";
+		sprintf(buffer, "%d", filenum);
+		strcat(filename, buffer);
+		fp = fopen(filename, "r");
+	}
 	TN* nd = creatNode(DEGREE, 0, NULL);
+	filenumber--;
 	fscanf(fp, "%d%d%d%d%d", &(nd -> n), &(nd -> size), &(nd -> access), &(nd -> leaf), &(nd -> filenum));
 	for(int i = 0; i < nd -> n; i++)
 		fscanf(fp, "%llu %s", &(nd -> key[i]), nd -> value[i]);
 	if(!nd -> leaf)
 		for(int i = 0; i < nd -> n + 1; i++)
-			fscanf(fp, "./storage/%d\n", &(nd -> childNum[i]));
+			fscanf(fp, "%d", &(nd -> childNum[i]));
 	fclose(fp);
-	printf("filenum %d opened\n", filenum);
+	//printf("filenum %d opened\n", filenum);
 	return nd;
-
 }
-//check num of node on stack == num of node deleted???
-int writeStackToDisk()
+
+void writeStackToDisk()
 {
 	stack* tmp = NULL;
 	int ti =  1 << 30;
@@ -168,28 +170,24 @@ int writeStackToDisk()
 	if(tmp)
 	{
 		tmp -> onMem = 0;
-		push(tmp->node->parent);
 		writeToDisk(&(tmp -> node));
-		return 1; // OK!
 	}
 	else
 	{
-		printf("you die!!\n");
-		exit(0);
+		printf("all leave moved do disk\n");
 		for(stack* t = st; t; t = t-> next)
 		{
 			if(t -> onMem)
 			{
 				t -> onMem = 0;
 				writeToDisk(&(t -> node));
-				return 1;
+				return;
 			}
 			else
 				free(t);
 		}
 		st = NULL;
 		end = NULL;
-		return 0;// need to free non-leaf node QQ
 	}
 }
 
@@ -208,8 +206,12 @@ TN* creatNode(int t, int leaf, TN* parent)
 	nd -> n = 0;
 	nd -> size = 0;
 	nd -> access = 0;
-	nd -> filenum = counter++;
-	printf("create %d\n", nd -> filenum);
+	nd -> filenum = filenumber++;
+	/*if(nd -> leaf)
+		printf("leaf: %d\n", filenumber);
+	*/
+	counter++;
+	//printf("create %d\n", nd -> filenum);
 	if(nd -> leaf)
 		push(nd);
 	return nd;
@@ -244,7 +246,26 @@ void traverse(TN* root)
 	}
 }
 
-void traverse_loop(TN* root)
+void traverse_WriteToDisk(TN* root)
+{
+	if(root -> leaf)
+	{
+		writeToDisk(&root);
+		return;
+	}
+	for(int i = 0; i < root -> n + 1; i++)
+	{
+		if(! root -> c[i])
+		{
+			root -> c[i] = openFileFromDisk(root -> childNum[i]);
+			root -> c[i] -> parent = root;
+		}
+		traverse_WriteToDisk(root -> c[i]);
+	}
+	writeToDisk(&root);
+}
+
+void traversePrint(TN* root)
 {
 	if(root -> leaf)
 	{
@@ -256,21 +277,20 @@ void traverse_loop(TN* root)
 	{
 		for(int i = 0; i < root -> n; i++)
 		{
-			traverse(root -> c[i]);
+			traversePrint(root -> c[i]);
 			printf("key: %llu, value: %s\n", root -> key[i], root -> value[i]);
 		}
-		traverse(root -> c[root -> n]);
+		traversePrint(root -> c[root -> n]);
 	}
 }
 
-
-
-// test if the child is NULL? if it is NULL go find the disk!!
 char* search(TN* root, unsigned long long int key)
 {
 	if(!root)
 		return NULL;
 	int i = 0;
+	//printf("search %llu\n", key);
+	//printf("filenum = %d\n", root -> filenum);
 	root -> access++;
 	while(root -> key[i] < key && i < root -> n)
 		i++;
@@ -286,7 +306,6 @@ char* search(TN* root, unsigned long long int key)
 	return search(root -> c[i], key);
 }
 
-//remember to maintain parent ralationship
 void splitChild(TN* root, int i, TN* y)
 {
 	int tmp = y -> access;
@@ -354,7 +373,6 @@ void splitChild(TN* root, int i, TN* y)
 	root -> n++;
 }
 
-// test if the child is NULL? if it is NULL go find the disk!!
 int insertNonFull(TN* root, unsigned long long int key, char* value)
 {
 	root -> access++;
@@ -429,7 +447,6 @@ int insertNonFull(TN* root, unsigned long long int key, char* value)
 	}
 }
 
-// test if the child is NULL? if it is NULL go find the disk!!
 void insert(TN** root, unsigned long long int key, char* value)
 {
 	if(! *root)
@@ -451,13 +468,9 @@ void insert(TN** root, unsigned long long int key, char* value)
 			tmp -> access = (*root) -> access;
 			tmp -> c[0] = *root;
 			tmp -> childNum[0] = (*root) -> filenum;
-			// change parent of old root to new onw
+			// change parent of old root to new one
 			(*root) -> parent = tmp;
 			splitChild(tmp, 0, *root);
-			//int i = 0;
-			//if(tmp ->key[0] < key)
-			//	i++;
-			//tmp -> size += insertNonFull(tmp -> c[i], key, value);
 			tmp -> size += insertNonFull(tmp, key, value);
 			*root = tmp;
 			ROOT = *root;
@@ -497,26 +510,38 @@ FILE* stringProcessing(char* a)
 	FILE* fp_out = fopen(p1, "w");
 	free(p1);
 	return fp_out;
+}
 
+void loadFileToMem(TN** root)
+{
+	FILE* fp = fopen("./storage/root","r");
+	if(fp)
+	{
+		printf("load file from storage\n");
+		fclose(fp);
+		*root = openFileFromDisk(0);
+		ROOT = *root;
+		fp = fopen("./storage/filenumber", "r");
+		fscanf(fp, "%d", &filenumber);
+		fclose(fp);
+	}
 }
 
 int main(int argc, char* argv[])
 {
-	printf("%d\n", NODESIZE);
-	TREESIZE = (1024 * 1024 / NODESIZE * 3); 
+	printf("DEGREE: %d\n", DEGREE);
+	TREESIZE = (1024 * 1024  * 1024/ NODESIZE * 3); 
 	printf("%d\n", TREESIZE);
-	//return 1;
 	TN* rt = NULL;
-	//FILE* fp = fopen("test.input", "r");
-	//FILE* fp_out = fopen("test.output", "w");
 	FILE* fp = fopen(argv[1], "r");
 	FILE* fp_out = stringProcessing(argv[1]);
 	char command[4];
 	unsigned long long int key, key2;
 	char value[129];
+	loadFileToMem(&rt);
+	
 	while(fscanf(fp, "%s", command) != EOF)
 	{
-		//printf("%s %d\n", command, counter++);
 		if(strcmp(command, "PUT") == 0)
 		{
 			fscanf(fp, "%llu %s", &key, value);
@@ -544,6 +569,18 @@ int main(int argc, char* argv[])
 			}
 		}
 	}
-	traverse(rt);
-	printf("size = %d\n", rt -> size);
+	fclose(fp);
+	fclose(fp_out);
+	int rootnum = rt -> filenum;
+	traverse_WriteToDisk(rt);
+	struct stat st = {0};
+	char buffer[50];
+	char filename[50] = "./storage/";
+	sprintf(buffer, "%d", rootnum);
+	strcat(filename, buffer);
+	rename(filename, "./storage/root");
+	fp = fopen("./storage/filenumber", "w");
+	fprintf(fp, "%d", filenumber);
+	fclose(fp);
+	//printf("%d\n", filenumber);
 }
